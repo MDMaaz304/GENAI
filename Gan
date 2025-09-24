@@ -1,0 +1,110 @@
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras import layers
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Config
+SEED = 42
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+EPOCHS = 50
+BATCH_SIZE = 256
+NOISE_DIM = 100
+LR = 2e-4
+BETA_1 = 0.5
+
+# Data
+(x_train, _), _ = keras.datasets.mnist.load_data()
+x_train = (x_train.astype('float32') - 127.5) / 127.5
+x_train = np.expand_dims(x_train, -1)
+train_ds = tf.data.Dataset.from_tensor_slices(x_train).shuffle(60000).batch(BATCH_SIZE)
+
+# Generator
+def build_generator():
+    return keras.Sequential([
+        layers.Dense(7*7*256, use_bias=False, input_shape=(NOISE_DIM,)),
+        layers.BatchNormalization(),
+        layers.ReLU(),
+        layers.Reshape((7,7,256)),
+        layers.Conv2DTranspose(128, 5, strides=1, padding='same', use_bias=False),
+        layers.BatchNormalization(),
+        layers.ReLU(),
+        layers.Conv2DTranspose(64, 5, strides=2, padding='same', use_bias=False),
+        layers.BatchNormalization(),
+        layers.ReLU(),
+        layers.Conv2DTranspose(1, 5, strides=2, padding='same', use_bias=False, activation='tanh')
+    ])
+
+# Discriminator
+def build_discriminator():
+    return keras.Sequential([
+        layers.Conv2D(64, 5, strides=2, padding='same', input_shape=(28,28,1)),
+        layers.LeakyReLU(0.2),
+        layers.Dropout(0.3),
+        layers.Conv2D(128, 5, strides=2, padding='same'),
+        layers.LeakyReLU(0.2),
+        layers.Dropout(0.3),
+        layers.Flatten(),
+        layers.Dense(1, activation='sigmoid')
+    ])
+
+generator = build_generator()
+discriminator = build_discriminator()
+
+# Losses & Optimizers
+bce = keras.losses.BinaryCrossentropy()
+g_opt = keras.optimizers.Adam(LR, beta_1=BETA_1)
+d_opt = keras.optimizers.Adam(LR, beta_1=BETA_1)
+
+def d_loss(real_out, fake_out):
+    real_loss = bce(tf.ones_like(real_out)*0.9, real_out)  # label smoothing
+    fake_loss = bce(tf.zeros_like(fake_out), fake_out)
+    return real_loss + fake_loss
+
+def g_loss(fake_out):
+    return bce(tf.ones_like(fake_out), fake_out)
+
+# Training step
+@tf.function
+def train_step(real_imgs):
+    noise = tf.random.normal([real_imgs.shape[0], NOISE_DIM])
+    with tf.GradientTape() as gt, tf.GradientTape() as dt:
+        fake_imgs = generator(noise, training=True)
+        real_out = discriminator(real_imgs, training=True)
+        fake_out = discriminator(fake_imgs, training=True)
+        gl = g_loss(fake_out)
+        dl = d_loss(real_out, fake_out)
+    g_grads = gt.gradient(gl, generator.trainable_variables)
+    d_grads = dt.gradient(dl, discriminator.trainable_variables)
+    g_opt.apply_gradients(zip(g_grads, generator.trainable_variables))
+    d_opt.apply_gradients(zip(d_grads, discriminator.trainable_variables))
+    return gl, dl
+
+# Plotting generated images
+seed = tf.random.normal([25, NOISE_DIM])
+def sample_images(epoch):
+    preds = generator(seed, training=False)
+    plt.figure(figsize=(5,5))
+    for i in range(25):
+        plt.subplot(5,5,i+1)
+        img = (preds[i] + 1) / 2.0
+        plt.imshow(img.numpy().squeeze(), cmap='gray')
+        plt.axis('off')
+    plt.suptitle(f'Epoch {epoch}')
+    plt.tight_layout()
+    plt.show()
+
+# Training loop
+def train():
+    for epoch in range(1, EPOCHS+1):
+        for real_batch in train_ds:
+            gl, dl = train_step(real_batch)
+        if epoch % 5 == 0 or epoch == 1 or epoch == EPOCHS:
+            print(f'Epoch {epoch} - G Loss: {gl:.4f}, D Loss: {dl:.4f}')
+            sample_images(epoch)
+
+# Run
+train()
+print("Training completed!")
