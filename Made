@@ -1,0 +1,56 @@
+import tensorflow as tf
+import tensorflow_probability as tfp
+import numpy as np
+import matplotlib.pyplot as plt
+
+# 1. MADE Model
+class MADE(tf.keras.Model):
+    def __init__(self, D, H, seed=None):
+        super().__init__()
+        rng = np.random.RandomState(seed)
+        deg_input = np.arange(1, D + 1)
+        deg_hidden = rng.randint(1, D, size=H)
+        self.mask_in_hid = (deg_input[:, None] <= deg_hidden[None, :]).astype(np.float32)
+        self.mask_hid_out = (deg_hidden[:, None] < deg_input[None, :]).astype(np.float32)
+        self.W_in_hid = self.add_weight(name="W_in_hid", shape=(D, H))
+        self.b_hid = self.add_weight(name="b_hid", shape=(H,), initializer="zeros")
+        self.W_hid_out = self.add_weight(name="W_hid_out", shape=(H, D))
+        self.b_out = self.add_weight(name="b_out", shape=(D,), initializer="zeros")
+
+    def call(self, x):
+        h = tf.nn.relu(tf.matmul(x, self.W_in_hid * self.mask_in_hid) + self.b_hid)
+        return tf.nn.sigmoid(tf.matmul(h, self.W_hid_out * self.mask_hid_out) + self.b_out)
+
+    def sample(self, n_samples=8):
+        samples = np.zeros((n_samples, 784), dtype=np.float32)
+        for i in range(784):
+            probs = self(samples)[:, i]
+            samples[:, i] = tfp.distributions.Bernoulli(probs=probs).sample().numpy()
+        return samples
+
+# 2. Data, Training & Generation
+(x_train, _), (_, _) = tf.keras.datasets.mnist.load_data()
+x_train = (x_train.reshape(-1, 28*28).astype("float32") / 255.0 > 0.5).astype("float32")
+
+INPUT_DIM, HIDDEN_DIM, BATCH_SIZE, EPOCHS = 784, 256, 128, 5
+model = MADE(INPUT_DIM, HIDDEN_DIM, seed=42)
+optimizer = tf.keras.optimizers.Adam(1e-3)
+
+print("Starting training...")
+for epoch in range(EPOCHS):
+    dataset = tf.data.Dataset.from_tensor_slices(x_train).shuffle(10000).batch(BATCH_SIZE)
+    for i, batch in enumerate(dataset):
+        with tf.GradientTape() as tape:
+            loss = tf.reduce_mean(tf.keras.losses.binary_crossentropy(batch, model(batch)))
+        optimizer.apply_gradients(zip(tape.gradient(loss, model.trainable_variables), model.trainable_variables))
+    print(f"Epoch {epoch+1}/{EPOCHS} - Final Batch Loss: {loss.numpy():.4f}")
+
+print("\nGenerating images...")
+generated_samples = model.sample(n_samples=8)
+plt.figure(figsize=(10, 2))
+for i in range(8):
+    plt.subplot(1, 8, i + 1)
+    plt.imshow(generated_samples[i].reshape(28, 28), cmap="binary")
+    plt.axis("off")
+plt.suptitle("Generated Images from MADE")
+plt.show()
